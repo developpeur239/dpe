@@ -230,3 +230,9 @@ dialog.xml.part
 dialog_couverture.csv
 dialog_ecart_osm.csv
 dialog_run.log
+cache_osm/
+verif_osm.csv
+cas_osm.json
+gps_commerciaux.csv
+verif_osm.log
+gps.log
