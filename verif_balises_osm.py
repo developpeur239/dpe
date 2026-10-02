@@ -200,7 +200,11 @@ def ways_pour(cas, points):
     ways = overpass(points)
     source = "overpass"
     if ways is None:
-        ways, source = api_osm(points), "api_osm"
+        try:
+            ways = api_osm(points)
+        except Exception:
+            ways = None
+        source = "api_osm"
         time.sleep(1)
     if ways is not None:
         with open(chemin, "w", encoding="utf-8") as f:
@@ -224,7 +228,7 @@ def verdict(cas):
     points = points_echantillon(cas["ligne"])
     ways, source = ways_pour(cas, points)
     if ways is None:
-        return "ERREUR", source, {}
+        return "ERREUR", source, Counter()
     apparies, avec_restriction, details = 0, 0, Counter()
     for p in points:
         proche = min(((dist_point_ligne(p, w["geom"]), w) for w in ways if len(w["geom"]) > 1),
