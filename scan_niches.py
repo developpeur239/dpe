@@ -85,6 +85,7 @@ def avis_app(app_id):
         with open(chemin, encoding="utf-8") as f:
             stock = json.load(f)
     nouveaux = 0
+    recus = 0
     for page in range(1, PAGES_AVIS + 1):
         url = f"https://itunes.apple.com/{PAYS}/rss/customerreviews/page={page}/id={app_id}/sortby=mostrecent/json"
         d = get_json(url)
@@ -96,6 +97,7 @@ def avis_app(app_id):
         for e in entries:
             if "im:rating" not in e:
                 continue
+            recus += 1
             rid = e["id"]["label"]
             if rid not in stock:
                 nouveaux += 1
@@ -109,7 +111,12 @@ def avis_app(app_id):
         time.sleep(0.5)
     with open(chemin, "w", encoding="utf-8") as f:
         json.dump(stock, f, ensure_ascii=False)
-    statut = "FLUX_VIDE" if not stock else ("OK" if nouveaux or stock else "CACHE")
+    if not stock:
+        statut = "FLUX_VIDE"
+    elif recus == 0:
+        statut = "CACHE"
+    else:
+        statut = "OK"
     return list(stock.values()), statut
 
 
