@@ -10,7 +10,8 @@ Fait remonter les apps qui ont :
 Usage :
     pip install google-play-scraper
     (si la recherche de la librairie plante, le script lit directement la page de recherche Play)
-    python scan_niches_play.py      # relançable : fusionne avec le cache
+    python scan_niches_play.py              # relançable : fusionne avec le cache
+    python scan_niches_play.py --hors-ligne # recalcule le classement depuis cache_play/, sans réseau
 
 Sorties :
     classement_play.csv   -> toutes les apps, triées par score (s'ouvre dans Excel)
@@ -18,19 +19,25 @@ Sorties :
     cache_play/           -> fiche + avis bruts par app
 """
 
-import json, os, csv, time, math, re, urllib.parse, urllib.request
+import json, os, csv, sys, time, math, re, urllib.parse, urllib.request
 from datetime import datetime, timezone
 from concurrent.futures import ThreadPoolExecutor
 from google_play_scraper import search, app as fiche_app, reviews, Sort
 
 LANG, PAYS = "fr", "fr"
 MIN_NOTES = 30
+MAX_NOTES = 50000         # écarte les apps géantes grand public (None = pas de plafond)
+GENRES_AUTORISES = {      # genreId Google Play retenus (ensemble vide = toutes catégories hors jeux)
+    "BUSINESS", "PRODUCTIVITY", "MEDICAL", "EDUCATION", "AUTO_AND_VEHICLES",
+    "MAPS_AND_NAVIGATION", "HOUSE_AND_HOME", "FOOD_AND_DRINK", "FINANCE", "PARENTING",
+}
 AVIS_PAR_APP = 300        # avis les plus récents récupérés par passage
 MOIS_RECENTS = 18
 MIN_AVIS_RECENTS = 10     # en dessous, pas de score (échantillon trop petit)
 THREADS = 3
 TOP_VERBATIMS = 40
 CACHE = "cache_play"
+FICHIER_TERMES = os.path.join(CACHE, "_termes.json")   # mots-clés par app, pour le mode hors ligne
 
 MOTS_CLES = [
     "gestion locative", "propriétaire bailleur", "état des lieux", "syndic copropriété", "agent immobilier", "location saisonnière",
@@ -147,8 +154,18 @@ def poids(avis):
 
 def analyser(app_id):
     data, statut = recuperer(app_id)
+    return calculer(app_id, data, statut)
+
+
+def calculer(app_id, data, statut):
     f = data["fiche"]
-    if not f or (f.get("genreId") or "").startswith("GAME") or (f.get("ratings") or 0) < MIN_NOTES:
+    if not f:
+        return None
+    genre_id = f.get("genreId") or ""
+    nb_notes = f.get("ratings") or 0
+    if genre_id.startswith("GAME") or (GENRES_AUTORISES and genre_id not in GENRES_AUTORISES):
+        return None
+    if nb_notes < MIN_NOTES or (MAX_NOTES is not None and nb_notes > MAX_NOTES):
         return None
     avis = list(data["avis"].values())
     recents = [a for a in avis if (m := mois_depuis(a["date"])) is not None and m <= MOIS_RECENTS]
@@ -162,11 +179,12 @@ def analyser(app_id):
     payant = bool(f.get("offersIAP")) or not f.get("free", True)
     rep_dev = [a for a in neg_rec if a["reponse_dev"]]
     score = 0.0
-    if pct_pond is not None:
-        score = math.log10((f.get("ratings") or 0) + 1) * pct_pond * (1.0 if payant else 0.5)
+    if pct_brut is not None:
+        score = math.log10(nb_notes + 1) * pct_brut * (1.0 if payant else 0.5)
 
     return {
         "app": f.get("title"), "id": app_id, "editeur": f.get("developer"), "genre": f.get("genre"),
+        "genre_id": genre_id,
         "termes": ", ".join(TERMES.get(app_id, [])),
         "nb_notes": f.get("ratings"), "installations": f.get("realInstalls") or f.get("installs"),
         "note_moy": round(f["score"], 2) if f.get("score") else "",
@@ -185,17 +203,42 @@ def analyser(app_id):
 TERMES = {}
 
 
-def main():
-    os.makedirs(CACHE, exist_ok=True)
+def scanner():
+    """Recherche + téléchargement des fiches et avis (réseau)."""
     for i, terme in enumerate(MOTS_CLES, 1):
         for app_id in chercher_ids(terme):
             TERMES.setdefault(app_id, []).append(terme)
         print(f"[{i}/{len(MOTS_CLES)}] {terme:28} -> {len(TERMES)} apps uniques")
         time.sleep(1)
+    with open(FICHIER_TERMES, "w", encoding="utf-8") as fh:
+        json.dump(TERMES, fh, ensure_ascii=False)
 
     print(f"\nRécupération des fiches et avis de {len(TERMES)} apps...")
     with ThreadPoolExecutor(THREADS) as ex:
-        res = [r for r in ex.map(analyser, list(TERMES)) if r]
+        return [r for r in ex.map(analyser, list(TERMES)) if r]
+
+
+def relire_cache():
+    """Mode hors ligne : recalcule tout depuis cache_play/, sans aucune requête."""
+    if os.path.exists(FICHIER_TERMES):
+        with open(FICHIER_TERMES, encoding="utf-8") as fh:
+            TERMES.update(json.load(fh))
+    res = []
+    for nom in sorted(os.listdir(CACHE)):
+        if not nom.endswith(".json") or nom.startswith("_"):
+            continue
+        app_id = nom[:-5]
+        data = charger_cache(app_id)
+        r = calculer(app_id, data, "CACHE" if data["avis"] else "FLUX_VIDE")
+        if r:
+            res.append(r)
+    print(f"Hors ligne : {len(res)} apps retenues depuis {CACHE}/")
+    return res
+
+
+def main():
+    os.makedirs(CACHE, exist_ok=True)
+    res = relire_cache() if "--hors-ligne" in sys.argv[1:] else scanner()
     res.sort(key=lambda r: r["score"], reverse=True)
     if not res:
         print("Aucune app exploitable. Vérifie la connexion ou relance plus tard.")
@@ -219,7 +262,7 @@ def main():
         statuts[r["statut_flux"]] = statuts.get(r["statut_flux"], 0) + 1
     print("\nTOP 25")
     for r in res[:25]:
-        print(f'{r["score"]:6} | {str(r["pct_neg_pondere"]):>5}% neg pondéré | {str(r["nb_notes"]):>7} notes | '
+        print(f'{r["score"]:6} | {str(r["pct_neg_recents"]):>5}% neg récents | {str(r["nb_notes"]):>7} notes | '
               f'{"€" if r["achats_integres"] or r["app_payante"] else " "} | {r["app"][:40]}')
     print(f"\n{len(res)} apps retenues. Statuts : {statuts}")
 
