@@ -84,7 +84,6 @@ def avis_app(app_id):
     if os.path.exists(chemin):
         with open(chemin, encoding="utf-8") as f:
             stock = json.load(f)
-    nouveaux = 0
     recus = 0
     for page in range(1, PAGES_AVIS + 1):
         url = f"https://itunes.apple.com/{PAYS}/rss/customerreviews/page={page}/id={app_id}/sortby=mostrecent/json"
@@ -99,8 +98,6 @@ def avis_app(app_id):
                 continue
             recus += 1
             rid = e["id"]["label"]
-            if rid not in stock:
-                nouveaux += 1
             stock[rid] = {
                 "note": int(e["im:rating"]["label"]),
                 "titre": e["title"]["label"],
