@@ -221,3 +221,7 @@ classement.csv
 verbatims.json
 __pycache__/
 scan.log
+cache_play/
+classement_play.csv
+verbatims_play.json
+scan_play.log
