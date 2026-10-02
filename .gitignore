@@ -220,3 +220,4 @@ cache/
 classement.csv
 verbatims.json
 __pycache__/
+scan.log
