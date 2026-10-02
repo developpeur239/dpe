@@ -234,13 +234,37 @@ class Budget:
                 or self.c["recherches"] >= MAX_RECHERCHES_WEB)
 
 
+def deja_fait(etat, max_pages=150):
+    """Rappel donné aux agents : ne refaire ni une recherche ni une page déjà vue."""
+    req = etat.get("requetes", [])
+    pages = etat.get("urls_vues", [])[-max_pages:]
+    if not req and not pages:
+        return ""
+    return ("\n\nRECHERCHES DÉJÀ FAITES pendant cette session (interdit de les refaire, même reformulées) :\n"
+            + ("\n".join(f"- {q}" for q in req) or "aucune")
+            + "\n\nPAGES DÉJÀ CONSULTÉES (ne pas les rechercher à nouveau ; tu peux les citer comme preuve) :\n"
+            + ("\n".join(f"- {u}" for u in pages) or "aucune"))
+
+
+def memoriser(etat, urls, requetes):
+    vues = etat.setdefault("urls_vues", [])
+    for u in sorted(urls):
+        if u and u not in vues:
+            vues.append(u)
+    faites = etat.setdefault("requetes", [])
+    for q in requetes:
+        if q and q not in faites:
+            faites.append(q)
+
+
 def appeler_agent(client, budget, systeme, consigne, max_recherches=RECHERCHES_PAR_APPEL):
-    """Appelle un agent avec la recherche web. Renvoie (texte, urls_vues)."""
+    """Appelle un agent avec la recherche web. Renvoie (texte, urls_vues, requetes)."""
+    consigne += deja_fait(budget.etat)
     messages = [{"role": "user", "content": consigne}]
     outils = [{"type": "web_search_20250305", "name": "web_search",
                "max_uses": max_recherches, "user_location": {
                    "type": "approximate", "country": "FR", "timezone": "Europe/Paris"}}]
-    textes, urls = [], set()
+    textes, urls, requetes = [], set(), []
     for _ in range(4):  # relances si l'API met la réponse en pause
         if budget.epuise():
             raise RuntimeError("budget épuisé")
@@ -270,6 +294,10 @@ def appeler_agent(client, budget, systeme, consigne, max_recherches=RECHERCHES_P
             d = bloc.model_dump() if hasattr(bloc, "model_dump") else dict(bloc)
             if d.get("type") == "text":
                 textes.append(d.get("text", ""))
+            elif d.get("type") == "server_tool_use" and d.get("name") == "web_search":
+                q = (d.get("input") or {}).get("query", "")
+                if q:
+                    requetes.append(q)
             elif d.get("type") == "web_search_tool_result":
                 contenu = d.get("content")
                 if isinstance(contenu, list):
@@ -283,7 +311,8 @@ def appeler_agent(client, budget, systeme, consigne, max_recherches=RECHERCHES_P
                         {"role": "assistant", "content": rep.content}]
             continue
         break
-    return "\n".join(textes), urls
+    memoriser(budget.etat, urls, requetes)
+    return "\n".join(textes), urls, requetes
 
 
 def extraire_json(texte):
@@ -328,7 +357,8 @@ def consigne_chercheur(dossier, nb, tuees, gardees):
 Idées déjà GARDÉES (ne pas les répéter) :
 {ok}
 
-Idées déjà TUÉES pendant cette session (ne pas les reproposer, et apprends de leurs défauts) :
+Idées déjà TUÉES ou REJETÉES pendant cette session (ne pas les reproposer, même reformulées ;
+apprends de leurs défauts) :
 {deja}
 
 TÂCHE : propose {nb} nouvelles idées. Pars des données ci-dessus, puis utilise la recherche
@@ -406,6 +436,18 @@ def sauver_etat(etat):
         json.dump(etat, f, ensure_ascii=False, indent=2)
 
 
+def cle_idee(nom):
+    t = unicodedata.normalize("NFKD", nom or "").encode("ascii", "ignore").decode().lower()
+    mots = re.findall(r"[a-z0-9]+", t)
+    return " ".join(sorted(m for m in mots if len(m) > 2))
+
+
+def est_doublon(idee, etat):
+    k = cle_idee(idee.get("nom"))
+    deja = {cle_idee(i.get("nom")) for i in etat["gardees"] + etat["tuees"] + etat["sans_preuve"]}
+    return not k or k in deja
+
+
 def examiner_idee(client, budget, idee, corpus, urls_chercheur, etat):
     nom = idee.get("nom", "sans nom")
 
@@ -424,7 +466,8 @@ def examiner_idee(client, budget, idee, corpus, urls_chercheur, etat):
 
     # 2) L'avocat du diable attaque
     journal(f"   → avocat du diable sur « {nom} »")
-    texte, urls_avocat = appeler_agent(client, budget, SYSTEME_AVOCAT, consigne_avocat(idee))
+    texte, _, _ = appeler_agent(client, budget, SYSTEME_AVOCAT, consigne_avocat(idee))
+    urls_avocat = set(etat.get("urls_vues", []))
     avis = extraire_json(texte)
     if not avis:
         journal(f"   ! réponse illisible de l'avocat pour « {nom} », idée mise de côté")
@@ -486,7 +529,7 @@ def lancer(reprise):
             manque = OBJECTIF_IDEES - len(etat["gardees"])
             a_proposer = min(manque + 3, 8)   # marge, car l'avocat en tuera
             journal(f"TOUR {etat['tour']} — le chercheur doit proposer {a_proposer} idées")
-            texte, urls = appeler_agent(
+            texte, urls, _ = appeler_agent(
                 client, budget, SYSTEME_CHERCHEUR,
                 consigne_chercheur(dossier, a_proposer,
                                    etat["tuees"] + etat["sans_preuve"], etat["gardees"]),
@@ -501,7 +544,10 @@ def lancer(reprise):
             for idee in idees:
                 if len(etat["gardees"]) >= OBJECTIF_IDEES:
                     break
-                examiner_idee(client, budget, idee, corpus, urls, etat)
+                if est_doublon(idee, etat):
+                    journal(f"   = {idee.get('nom', 'sans nom')} : déjà examinée, ignorée (aucun appel dépensé)")
+                    continue
+                examiner_idee(client, budget, idee, corpus, set(etat.get("urls_vues", [])), etat)
                 sauver_etat(etat)
             sauver_etat(etat)
     except RuntimeError as e:
