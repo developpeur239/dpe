@@ -54,7 +54,7 @@ from urllib.parse import urlparse
 MODELE = os.environ.get("MODELE_AGENTS", "claude-sonnet-5-5")
 OBJECTIF_IDEES = 10
 MAX_TOURS = 6                 # nombre maximum d'allers-retours chercheur -> avocat
-MAX_RECHERCHES_WEB = 200      # garde-fou de coût : recherches web au total
+MAX_RECHERCHES_WEB = 100      # garde-fou de coût : recherches web au total
 MAX_APPELS_API = 80           # garde-fou de coût : appels au modèle au total
 RECHERCHES_PAR_APPEL = 8      # recherches web autorisées par appel d'agent
 MAX_NOTES_APP = 50000         # on écarte les grosses apps grand public
