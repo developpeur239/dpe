@@ -216,3 +216,7 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+cache/
+classement.csv
+verbatims.json
+__pycache__/
