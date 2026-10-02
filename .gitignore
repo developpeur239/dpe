@@ -236,3 +236,8 @@ cas_osm.json
 gps_commerciaux.csv
 verif_osm.log
 gps.log
+etat_agents.json
+rapport_10_idees.md
+journal_agents.log
+agents.log
+reponse_illisible_tour*.txt
